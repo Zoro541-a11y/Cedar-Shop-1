@@ -1,0 +1,405 @@
+'use client';
+
+import * as React from 'react';
+import { supabase } from './supabase';
+import { CURRENCIES, type CurrencyCode, type LanguageCode } from './constants';
+import { t as translate, type TranslationKey } from './i18n';
+import type { CartItem, Product } from './types';
+
+/* ----------------------------- Language ----------------------------- */
+
+type LanguageContextValue = {
+  lang: LanguageCode;
+  dir: 'ltr' | 'rtl';
+  setLang: (l: LanguageCode) => void;
+  toggleLang: () => void;
+  t: (key: TranslationKey) => string;
+};
+
+const LanguageContext = React.createContext<LanguageContextValue | null>(null);
+
+export function LanguageProvider({ children }: { children: React.ReactNode }) {
+  const [lang, setLangState] = React.useState<LanguageCode>('en');
+  const dir: 'ltr' | 'rtl' = lang === 'ar' ? 'rtl' : 'ltr';
+
+  React.useEffect(() => {
+    const saved = (typeof window !== 'undefined' && localStorage.getItem('sf-lang')) as LanguageCode | null;
+    if (saved && (saved === 'en' || saved === 'ar')) setLangState(saved);
+  }, []);
+
+  React.useEffect(() => {
+    document.documentElement.lang = lang;
+    document.documentElement.dir = dir;
+    if (typeof window !== 'undefined') localStorage.setItem('sf-lang', lang);
+  }, [lang, dir]);
+
+  const setLang = React.useCallback((l: LanguageCode) => setLangState(l), []);
+  const toggleLang = React.useCallback(() => setLangState((p) => (p === 'en' ? 'ar' : 'en')), []);
+  const t = React.useCallback((key: TranslationKey) => translate(lang, key), [lang]);
+
+  const value = React.useMemo(
+    () => ({ lang, dir, setLang, toggleLang, t }),
+    [lang, dir, setLang, toggleLang, t]
+  );
+
+  return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;
+}
+
+export function useLanguage() {
+  const ctx = React.useContext(LanguageContext);
+  if (!ctx) throw new Error('useLanguage must be used within LanguageProvider');
+  return ctx;
+}
+
+/* ----------------------------- Currency ----------------------------- */
+
+type CurrencyContextValue = {
+  currency: CurrencyCode;
+  setCurrency: (c: CurrencyCode) => void;
+  currencies: typeof CURRENCIES;
+};
+
+const CurrencyContext = React.createContext<CurrencyContextValue | null>(null);
+
+export function CurrencyProvider({ children }: { children: React.ReactNode }) {
+  const [currency, setCurrencyState] = React.useState<CurrencyCode>('USD');
+
+  React.useEffect(() => {
+    const saved = typeof window !== 'undefined' && (localStorage.getItem('sf-currency') as CurrencyCode | null);
+    if (saved && CURRENCIES.some((c) => c.code === saved)) setCurrencyState(saved);
+  }, []);
+
+  const setCurrency = React.useCallback((c: CurrencyCode) => {
+    setCurrencyState(c);
+    if (typeof window !== 'undefined') localStorage.setItem('sf-currency', c);
+  }, []);
+
+  const value = React.useMemo(
+    () => ({ currency, setCurrency, currencies: CURRENCIES }),
+    [currency, setCurrency]
+  );
+
+  return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>;
+}
+
+export function useCurrency() {
+  const ctx = React.useContext(CurrencyContext);
+  if (!ctx) throw new Error('useCurrency must be used within CurrencyProvider');
+  return ctx;
+}
+
+/* ----------------------------- Auth ----------------------------- */
+
+type AuthUser = {
+  id: string;
+  email: string;
+  fullName?: string;
+  role: 'customer' | 'seller' | 'admin';
+};
+
+type AuthContextValue = {
+  user: AuthUser | null;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
+  signUp: (email: string, password: string, fullName: string) => Promise<{ error: string | null }>;
+  signInWithOAuth: (provider: 'google' | 'apple' | 'facebook') => Promise<{ error: string | null }>;
+  signOut: () => Promise<void>;
+};
+
+const AuthContext = React.createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = React.useState<AuthUser | null>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      if (data.session?.user) {
+        setUser(mapUser(data.session.user));
+      }
+      setLoading(false);
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      (async () => {
+        if (session?.user) {
+          await ensureProfile(session.user);
+          setUser(mapUser(session.user));
+        } else {
+          setUser(null);
+        }
+        setLoading(false);
+      })();
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  const signIn = React.useCallback(async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    return { error: error?.message ?? null };
+  }, []);
+
+  const signUp = React.useCallback(async (email: string, password: string, fullName: string) => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: fullName, role: 'customer' } },
+    });
+    if (error) return { error: error.message };
+    if (data.user) {
+      await ensureProfile(data.user);
+    }
+    return { error: null };
+  }, []);
+
+  const signInWithOAuth = React.useCallback(async (provider: 'google' | 'apple' | 'facebook') => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined },
+    });
+    return { error: error?.message ?? null };
+  }, []);
+
+  const signOut = React.useCallback(async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  }, []);
+
+  const value = React.useMemo(
+    () => ({ user, loading, signIn, signUp, signInWithOAuth, signOut }),
+    [user, loading, signIn, signUp, signInWithOAuth, signOut]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const ctx = React.useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}
+
+function mapUser(u: import('@supabase/supabase-js').User): AuthUser {
+  const meta = u.user_metadata ?? {};
+  const role = (meta.role as AuthUser['role']) || 'customer';
+  return {
+    id: u.id,
+    email: u.email ?? '',
+    fullName: meta.full_name as string | undefined,
+    role,
+  };
+}
+
+async function ensureProfile(u: import('@supabase/supabase-js').User) {
+  const meta = u.user_metadata ?? {};
+  const { error } = await supabase
+    .from('profiles')
+    .upsert(
+      {
+        id: u.id,
+        email: u.email,
+        full_name: meta.full_name ?? null,
+        role: (meta.role as string) || 'customer',
+        avatar_url: meta.avatar_url ?? null,
+      },
+      { onConflict: 'id' }
+    );
+  if (error && error.code !== '23505') {
+    console.warn('profile upsert failed', error.message);
+  }
+}
+
+/* ----------------------------- Cart ----------------------------- */
+
+type CartContextValue = {
+  items: CartItem[];
+  addItem: (product: Product, quantity?: number, variants?: Record<string, string>) => void;
+  removeItem: (productId: string, variants: Record<string, string>) => void;
+  updateQuantity: (productId: string, variants: Record<string, string>, qty: number) => void;
+  clearCart: () => void;
+  count: number;
+  subtotal: number;
+  coupon: { code: string; discount: number } | null;
+  applyCoupon: (code: string, subtotal: number) => { ok: boolean; message: string };
+  removeCoupon: () => void;
+  open: boolean;
+  setOpen: (o: boolean) => void;
+};
+
+const CartContext = React.createContext<CartContextValue | null>(null);
+
+function variantKey(variants: Record<string, string>) {
+  return Object.entries(variants)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}:${v}`)
+    .join('|');
+}
+
+export function CartProvider({ children }: { children: React.ReactNode }) {
+  const [items, setItems] = React.useState<CartItem[]>([]);
+  const [coupon, setCoupon] = React.useState<{ code: string; discount: number } | null>(null);
+  const [open, setOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    try {
+      const saved = localStorage.getItem('sf-cart');
+      if (saved) setItems(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  React.useEffect(() => {
+    localStorage.setItem('sf-cart', JSON.stringify(items));
+  }, [items]);
+
+  const addItem = React.useCallback(
+    (product: Product, quantity = 1, variants: Record<string, string> = {}) => {
+      const key = variantKey(variants);
+      const unitPrice =
+        product.price +
+        Object.entries(variants).reduce((acc, [name, val]) => {
+          const v = product.variants.find((x) => x.name === name);
+          const opt = v?.options.find((o) => o.value === val || o.name === val);
+          return acc + (opt?.priceDelta ?? 0);
+        }, 0);
+      setItems((prev) => {
+        const idx = prev.findIndex((i) => i.product.id === product.id && variantKey(i.variantSelections) === key);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], quantity: next[idx].quantity + quantity };
+          return next;
+        }
+        return [...prev, { product, quantity, variantSelections: variants, unitPrice }];
+      });
+    },
+    []
+  );
+
+  const removeItem = React.useCallback((productId: string, variants: Record<string, string>) => {
+    const key = variantKey(variants);
+    setItems((prev) => prev.filter((i) => !(i.product.id === productId && variantKey(i.variantSelections) === key)));
+  }, []);
+
+  const updateQuantity = React.useCallback(
+    (productId: string, variants: Record<string, string>, qty: number) => {
+      const key = variantKey(variants);
+      setItems((prev) =>
+        prev.map((i) =>
+          i.product.id === productId && variantKey(i.variantSelections) === key
+            ? { ...i, quantity: Math.max(1, qty) }
+            : i
+        )
+      );
+    },
+    []
+  );
+
+  const clearCart = React.useCallback(() => {
+    setItems([]);
+    setCoupon(null);
+  }, []);
+
+  const subtotal = React.useMemo(
+    () => items.reduce((acc, i) => acc + i.unitPrice * i.quantity, 0),
+    [items]
+  );
+
+  const applyCoupon = React.useCallback(
+    (code: string, sub: number) => {
+      const COUPONS: Record<string, { type: 'percent' | 'fixed'; value: number; min?: number }> = {
+        WELCOME10: { type: 'percent', value: 10 },
+        SAVE25: { type: 'percent', value: 25, min: 100 },
+        FLAT15: { type: 'fixed', value: 15, min: 50 },
+        FREESHIP: { type: 'fixed', value: 8, min: 30 },
+      };
+      const c = COUPONS[code.toUpperCase()];
+      if (!c) return { ok: false, message: 'invalidCoupon' };
+      if (c.min && sub < c.min) return { ok: false, message: 'invalidCoupon' };
+      const discount = c.type === 'percent' ? (sub * c.value) / 100 : c.value;
+      setCoupon({ code: code.toUpperCase(), discount });
+      return { ok: true, message: 'couponApplied' };
+    },
+    []
+  );
+
+  const removeCoupon = React.useCallback(() => setCoupon(null), []);
+
+  const count = React.useMemo(() => items.reduce((a, i) => a + i.quantity, 0), [items]);
+
+  const value = React.useMemo(
+    () => ({
+      items,
+      addItem,
+      removeItem,
+      updateQuantity,
+      clearCart,
+      count,
+      subtotal,
+      coupon,
+      applyCoupon,
+      removeCoupon,
+      open,
+      setOpen,
+    }),
+    [items, addItem, removeItem, updateQuantity, clearCart, count, subtotal, coupon, applyCoupon, removeCoupon, open]
+  );
+
+  return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
+}
+
+export function useCart() {
+  const ctx = React.useContext(CartContext);
+  if (!ctx) throw new Error('useCart must be used within CartProvider');
+  return ctx;
+}
+
+/* ----------------------------- Wishlist ----------------------------- */
+
+type WishlistContextValue = {
+  ids: string[];
+  toggle: (productId: string) => void;
+  has: (productId: string) => boolean;
+  count: number;
+};
+
+const WishlistContext = React.createContext<WishlistContextValue | null>(null);
+
+export function WishlistProvider({ children }: { children: React.ReactNode }) {
+  const [ids, setIds] = React.useState<string[]>([]);
+
+  React.useEffect(() => {
+    try {
+      const saved = localStorage.getItem('sf-wishlist');
+      if (saved) setIds(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  React.useEffect(() => {
+    localStorage.setItem('sf-wishlist', JSON.stringify(ids));
+  }, [ids]);
+
+  const toggle = React.useCallback((productId: string) => {
+    setIds((prev) => (prev.includes(productId) ? prev.filter((id) => id !== productId) : [...prev, productId]));
+  }, []);
+
+  const has = React.useCallback((productId: string) => ids.includes(productId), [ids]);
+
+  const value = React.useMemo(
+    () => ({ ids, toggle, has, count: ids.length }),
+    [ids, toggle, has]
+  );
+
+  return <WishlistContext.Provider value={value}>{children}</WishlistContext.Provider>;
+}
+
+export function useWishlist() {
+  const ctx = React.useContext(WishlistContext);
+  if (!ctx) throw new Error('useWishlist must be used within WishlistProvider');
+  return ctx;
+}

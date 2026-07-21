@@ -1,0 +1,149 @@
+'use client';
+
+import Link from 'next/link';
+import Image from 'next/image';
+import { Heart, ShoppingBag, Eye, Zap, Flame, Star } from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { useLanguage, useCart, useWishlist } from '@/lib/store';
+import { Price } from '@/components/price';
+import { RatingStars } from '@/components/rating-stars';
+import { cn } from '@/lib/utils';
+import type { Product } from '@/lib/types';
+
+export function ProductCard({ product, index = 0 }: { product: Product; index?: number }) {
+  const { lang, t } = useLanguage();
+  const { addItem, setOpen } = useCart();
+  const { toggle, has } = useWishlist();
+  const [imgLoaded, setImgLoaded] = useState(false);
+
+  const title = lang === 'ar' && product.title_ar ? product.title_ar : product.title;
+  const discount = product.compare_at_price
+    ? Math.round(((product.compare_at_price - product.price) / product.compare_at_price) * 100)
+    : 0;
+  const wished = has(product.id);
+
+  const handleAdd = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    addItem(product, 1);
+    toast.success(t('addedToCart'));
+    setOpen(true);
+  };
+
+  const handleWishlist = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggle(product.id);
+    toast.success(wished ? t('removedFromWishlist') : t('addedToWishlist'));
+  };
+
+  return (
+    <Link
+      href={`/product/${product.slug}`}
+      className="group relative flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card transition-all duration-300 hover:-translate-y-1 hover:shadow-glow"
+      style={{ animationDelay: `${index * 40}ms` }}
+    >
+      {/* Badges */}
+      <div className="absolute start-2 top-2 z-10 flex flex-col gap-1">
+        {product.is_flash_deal && (
+          <span className="flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[10px] font-bold text-primary-foreground shadow-sm">
+            <Zap className="h-3 w-3" /> {t('flashDeals')}
+          </span>
+        )}
+        {discount > 0 && (
+          <span className="rounded-md bg-accent px-2 py-1 text-[10px] font-bold text-accent-foreground shadow-sm">
+            -{discount}%
+          </span>
+        )}
+        {product.is_trending && !product.is_flash_deal && (
+          <span className="flex items-center gap-1 rounded-md bg-warning/90 px-2 py-1 text-[10px] font-bold text-warning-foreground shadow-sm">
+            <Flame className="h-3 w-3" /> {t('trending')}
+          </span>
+        )}
+      </div>
+
+      {/* Wishlist */}
+      <button
+        onClick={handleWishlist}
+        className={cn(
+          'absolute end-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-background/80 backdrop-blur transition-all hover:scale-110',
+          wished ? 'text-primary' : 'text-muted-foreground'
+        )}
+        aria-label="wishlist"
+      >
+        <Heart className={cn('h-4 w-4', wished && 'fill-primary')} />
+      </button>
+
+      {/* Image */}
+      <div className="relative aspect-square overflow-hidden bg-muted">
+        {!imgLoaded && <div className="shimmer absolute inset-0 bg-muted" />}
+        <Image
+          src={product.images[0]}
+          alt={title}
+          fill
+          sizes="(max-width: 768px) 50vw, (max-width: 1200px) 25vw, 20vw"
+          className={cn(
+            'object-cover transition-all duration-500 group-hover:scale-110',
+            imgLoaded ? 'opacity-100' : 'opacity-0'
+          )}
+          onLoad={() => setImgLoaded(true)}
+        />
+        {/* Hover actions */}
+        <div className="absolute inset-x-0 bottom-0 flex translate-y-full justify-center gap-2 bg-gradient-to-t from-black/60 to-transparent p-3 transition-transform duration-300 group-hover:translate-y-0">
+          <button
+            onClick={handleAdd}
+            disabled={product.stock === 0}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            <ShoppingBag className="h-3.5 w-3.5" />
+            {product.stock === 0 ? t('outOfStock') : t('addToCart')}
+          </button>
+          <span className="flex items-center justify-center rounded-lg bg-background/90 px-3 py-2 text-foreground backdrop-blur">
+            <Eye className="h-3.5 w-3.5" />
+          </span>
+        </div>
+      </div>
+
+      {/* Info */}
+      <div className="flex flex-1 flex-col gap-1.5 p-3">
+        <h3 className="line-clamp-2 text-sm font-medium leading-snug text-foreground transition-colors group-hover:text-primary">
+          {title}
+        </h3>
+
+        <div className="flex items-center gap-1.5">
+          <RatingStars rating={product.rating} size={12} />
+          <span className="text-xs text-muted-foreground">
+            ({product.rating_count > 1000 ? `${(product.rating_count / 1000).toFixed(1)}k` : product.rating_count})
+          </span>
+        </div>
+
+        <div className="mt-auto pt-1">
+          <Price amount={product.price} originalAmount={product.compare_at_price} size="md" className="text-primary" />
+          {product.shipping_free && (
+            <p className="mt-0.5 text-[11px] font-medium text-success">{t('freeShipping')}</p>
+          )}
+        </div>
+
+        {product.sold > 100 && (
+          <p className="text-[11px] text-muted-foreground">
+            {product.sold.toLocaleString()} {t('sold')}
+          </p>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+export function ProductCardSkeleton() {
+  return (
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card">
+      <div className="shimmer aspect-square bg-muted" />
+      <div className="space-y-2 p-3">
+        <div className="shimmer h-3 w-full rounded bg-muted" />
+        <div className="shimmer h-3 w-2/3 rounded bg-muted" />
+        <div className="shimmer h-5 w-1/2 rounded bg-muted" />
+      </div>
+    </div>
+  );
+}
